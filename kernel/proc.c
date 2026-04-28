@@ -498,6 +498,70 @@ sched(void)
   mycpu()->intena = intena;
 }
 
+int
+co_yield_internal(int target_pid, int value)
+{
+  struct proc *p = myproc(); // current process
+  struct proc *target = 0;
+  struct proc *tp;
+
+  // validation: a process may not yield to itself 
+  if(target_pid == p->pid || target_pid <= 0)
+    return -1;
+
+  // search for the target process in the process table 
+  for(tp = proc; tp < &proc[NPROC]; tp++) {
+    acquire(&tp->lock);
+    if(tp->pid == target_pid && tp->state != UNUSED && tp->state != ZOMBIE) {
+      target = tp;
+      // target found, keep its lock held
+      break;
+    }
+    release(&tp->lock);
+  }
+
+  // if the target process was not found or is dead
+  if(target == 0) return -1;
+
+  // check if the target is already waiting for us (prepared)
+  // use the existing chan field to represent what the process is sleeping on
+  if(target->state == SLEEPING && target->chan == p) {
+    
+    // 1. deliver the value to the target's a0 register (its return value)
+    target->trapframe->a0 = value;
+
+    // 2. update states: current process sleeps, target becomes running
+    p->state = SLEEPING;
+    p->chan = target; // mark that we are waiting on the target
+    target->state = RUNNING;
+
+    // 3. update the current CPU to point at the target process 
+    struct cpu *c = mycpu();
+    c->proc = target;
+
+    // 4. direct switch bypassing the scheduler
+    // note: this swtch goes straight to the target's context
+    swtch(&p->context, &target->context);
+
+    // when we return here later, our return value was already injected into a0 by the other process
+    release(&target->lock);
+    return p->trapframe->a0;
+  } 
+  else {
+    // target not ready - sleep until it calls co_yield 
+    p->chan = target; 
+    
+    // release target lock before sleeping to avoid deadlock
+    release(&target->lock);
+    
+    // sleep on our own wait channel until the target performs the handoff
+    sleep(target, &p->lock); // do the sched 
+    
+    // after waking up from sleep, the transferred value is in trapframe->a0
+    return p->trapframe->a0;
+  }
+}
+
 // Give up the CPU for one scheduling round.
 void
 yield(void)

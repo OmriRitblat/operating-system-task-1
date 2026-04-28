@@ -22,6 +22,25 @@ sys_getpid(void)
 }
 
 uint64
+sys_memsize(void)
+{
+  return myproc()->sz;
+}
+
+uint64
+sys_co_yield(void)
+{
+  int pid, value;
+  argint(0, &pid);
+  argint(1, &value);
+  if(pid < 0 || pid >= NPROC || value < 0 || pid == myproc()->pid){
+    return -1;
+  }
+  co_yield_internal(pid, value);
+  return 0;
+}
+
+uint64
 sys_fork(void)
 {
   return fork();
