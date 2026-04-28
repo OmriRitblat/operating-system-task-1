@@ -501,6 +501,7 @@ sched(void)
 int
 co_yield_internal(int target_pid, int value)
 {
+  printf("co_yield_internal called\n");
   struct proc *p = myproc(); // current process
   struct proc *target = 0;
   struct proc *tp;
@@ -511,10 +512,16 @@ co_yield_internal(int target_pid, int value)
 
   // search for the target process in the process table 
   for(tp = proc; tp < &proc[NPROC]; tp++) {
+    if(tp->pid == p->pid){
+      continue;
+    }
+    printf("Checking process %d\n", tp->pid);
     acquire(&tp->lock);
+    printf("looking for target %d, checking process %d with state %d\n", target_pid, tp->pid, tp->state);
     if(tp->pid == target_pid && tp->state != UNUSED && tp->state != ZOMBIE) {
       target = tp;
       // target found, keep its lock held
+      printf("Found target process %d\n", tp->pid);
       break;
     }
     release(&tp->lock);
@@ -525,8 +532,9 @@ co_yield_internal(int target_pid, int value)
 
   // check if the target is already waiting for us (prepared)
   // use the existing chan field to represent what the process is sleeping on
+  printf("Performing direct no\n");
   if(target->state == SLEEPING && target->chan == p) {
-    
+    printf("Performing direct handoff\n");
     // 1. deliver the value to the target's a0 register (its return value)
     target->trapframe->a0 = value;
 
@@ -544,7 +552,6 @@ co_yield_internal(int target_pid, int value)
     swtch(&p->context, &target->context);
 
     // when we return here later, our return value was already injected into a0 by the other process
-    release(&target->lock);
     return p->trapframe->a0;
   } 
   else {
@@ -555,11 +562,31 @@ co_yield_internal(int target_pid, int value)
     release(&target->lock);
     
     // sleep on our own wait channel until the target performs the handoff
-    sleep(target, &p->lock); // do the sched 
+    //sleep(target, &p->lock); // do the sched 
+    p->state = SLEEPING;
+
+    //release!!!!!!!!!!!!!!!!!!!!!!!
+    struct proc *pp;
+    struct cpu *c = mycpu();
     
+    for(pp = proc; pp < &proc[NPROC]; pp++) {
+      if(pp->pid == p->pid){
+        continue;
+      }
+      acquire(&pp->lock);
+      if(pp->state == RUNNABLE) {
+        // Switch to chosen process.  It is the process's job
+        // to release its lock and then reacquire it
+        // before jumping back to us.
+        pp->state = RUNNING;
+        c->proc = pp;
+        swtch(&c->context, &pp->context);
+      }
+
     // after waking up from sleep, the transferred value is in trapframe->a0
-    return p->trapframe->a0;
   }
+  return p->trapframe->a0;
+}
 }
 
 // Give up the CPU for one scheduling round.
