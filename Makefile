@@ -119,6 +119,9 @@ UPROGS=\
 	$U/_helloworld\
 	$U/_memsize_test\
 	$U/_coyield_test\
+	$U/_co_test_self\
+	$U/_co_test_killed\
+	$U/_co_test_badpid\
 	$U/_cat\
 	$U/_echo\
 	$U/_forktest\

@@ -464,6 +464,7 @@ scheduler(void)
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
+        p = c->proc;
         c->proc = 0;
       }
       release(&p->lock);
@@ -501,92 +502,76 @@ sched(void)
 int
 co_yield_internal(int target_pid, int value)
 {
-  printf("co_yield_internal called\n");
-  struct proc *p = myproc(); // current process
+  mycpu()->intena = 0; // Disable interrupts to avoid race conditions
+
+  struct proc *p = myproc(); // Current process
   struct proc *target = 0;
   struct proc *tp;
 
-  // validation: a process may not yield to itself 
-  if(target_pid == p->pid || target_pid <= 0)
+  // A process may not yield to itself
+  if (target_pid == p->pid || target_pid <= 0) {
     return -1;
+  }
 
-  // search for the target process in the process table 
-  for(tp = proc; tp < &proc[NPROC]; tp++) {
-    if(tp->pid == p->pid){
+  // Search for the target process in the process table
+  for (tp = proc; tp < &proc[NPROC]; tp++) {
+    if (tp->pid == p->pid) {
       continue;
     }
-    printf("Checking process %d\n", tp->pid);
+
     acquire(&tp->lock);
-    printf("looking for target %d, checking process %d with state %d\n", target_pid, tp->pid, tp->state);
-    if(tp->pid == target_pid && tp->state != UNUSED && tp->state != ZOMBIE) {
+
+    if (tp->pid == target_pid &&
+        tp->state != UNUSED &&
+        tp->state != ZOMBIE) {
       target = tp;
-      // target found, keep its lock held
-      printf("Found target process %d\n", tp->pid);
-      break;
+      break; // Keep target->lock held
     }
+
     release(&tp->lock);
   }
 
-  // if the target process was not found or is dead
-  if(target == 0) return -1;
+  // Target was not found or is dead
+  if (target == 0) {
+    return -1;
+  }
 
-  // check if the target is already waiting for us (prepared)
-  // use the existing chan field to represent what the process is sleeping on
-  printf("Performing direct no\n");
-  if(target->state == SLEEPING && target->chan == p) {
-    printf("Performing direct handoff\n");
-    // 1. deliver the value to the target's a0 register (its return value)
+  // Case 1: target is already waiting for current process
+  if (target->state == SLEEPING && target->chan == p) {
+    p->state = SLEEPING;
+    p->chan = target;
+
+    target->state = RUNNING;
     target->trapframe->a0 = value;
 
-    // 2. update states: current process sleeps, target becomes running
-    p->state = SLEEPING;
-    p->chan = target; // mark that we are waiting on the target
-    target->state = RUNNING;
-
-    // 3. update the current CPU to point at the target process 
     struct cpu *c = mycpu();
     c->proc = target;
 
-    // 4. direct switch bypassing the scheduler
-    // note: this swtch goes straight to the target's context
+    release(&target->lock);
+    // Direct context switch to target
     swtch(&p->context, &target->context);
 
-    // when we return here later, our return value was already injected into a0 by the other process
+    mycpu()->intena = 1;
+
     return p->trapframe->a0;
-  } 
-  else {
-    // target not ready - sleep until it calls co_yield 
-    p->chan = target; 
-    
-    // release target lock before sleeping to avoid deadlock
-    release(&target->lock);
-    
-    // sleep on our own wait channel until the target performs the handoff
-    //sleep(target, &p->lock); // do the sched 
-    p->state = SLEEPING;
-
-    //release!!!!!!!!!!!!!!!!!!!!!!!
-    struct proc *pp;
-    struct cpu *c = mycpu();
-    
-    for(pp = proc; pp < &proc[NPROC]; pp++) {
-      if(pp->pid == p->pid){
-        continue;
-      }
-      acquire(&pp->lock);
-      if(pp->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        pp->state = RUNNING;
-        c->proc = pp;
-        swtch(&c->context, &pp->context);
-      }
-
-    // after waking up from sleep, the transferred value is in trapframe->a0
   }
-  return p->trapframe->a0;
-}
+
+  // Case 2: target is not ready, so current process goes to sleep
+  p->chan = target;
+
+  release(&target->lock);
+
+  acquire(&p->lock);
+  p->state = SLEEPING;
+
+  struct cpu *c = mycpu();
+
+  // Switch back to scheduler
+  swtch(&p->context, &c->context);
+
+  mycpu()->intena = 1;
+
+  return myproc()->trapframe->a0;
 }
 
 // Give up the CPU for one scheduling round.

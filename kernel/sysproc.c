@@ -36,8 +36,7 @@ sys_co_yield(void)
   if(pid < 0 || pid >= NPROC || value < 0 || pid == myproc()->pid){
     return -1;
   }
-  co_yield_internal(pid, value);
-  return 0;
+  return co_yield_internal(pid, value);
 }
 
 uint64
